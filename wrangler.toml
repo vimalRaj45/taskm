@@ -1,0 +1,7 @@
+name = "task-manager-server"
+main = "src/app.ts"
+compatibility_date = "2024-08-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+FRONTEND_URL = "http://localhost:5173"
