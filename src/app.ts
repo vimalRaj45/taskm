@@ -17,26 +17,19 @@ const app = new Hono();
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
-// CORS configuration supporting Production, Localhost, Vercel & Render origins
+// CORS configuration dynamically supporting Cloudflare Pages, Production, Localhost, Vercel & Render origins
 app.use(
   '*',
   cors({
     origin: (origin) => {
-      if (
-        !origin ||
-        origin.includes('localhost') ||
-        origin.includes('127.0.0.1') ||
-        origin === FRONTEND_URL ||
-        origin.endsWith('.vercel.app') ||
-        origin.endsWith('.onrender.com')
-      ) {
-        return origin || FRONTEND_URL;
+      if (origin) {
+        return origin;
       }
-      return FRONTEND_URL;
+      return process.env.FRONTEND_URL || 'https://taskm.pages.dev';
     },
     credentials: true,
-    allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization'],
+    allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
   })
 );
 

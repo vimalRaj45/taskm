@@ -85,9 +85,18 @@ const GOOGLE_AUTH_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://loca
 
 // GET /api/auth/google/url - Public endpoint for Google Sign-In URL
 auth.get('/google/url', (c) => {
+  const host = c.req.header('host') || 'taskm-r2m0.onrender.com';
+  const protocol = c.req.header('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
+  
+  // Use GOOGLE_REDIRECT_URI if configured, but fix localhost fallback when running in production
+  let redirectUri = process.env.GOOGLE_REDIRECT_URI || `${protocol}://${host}/api/emails/callback`;
+  if (!host.includes('localhost') && redirectUri.includes('localhost')) {
+    redirectUri = `${protocol}://${host}/api/emails/callback`;
+  }
+
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: GOOGLE_AUTH_REDIRECT_URI,
+    redirect_uri: redirectUri,
     response_type: 'code',
     scope: 'openid email profile',
     access_type: 'offline',
