@@ -83,16 +83,19 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const GOOGLE_AUTH_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/emails/callback';
 
-// GET /api/auth/google/url - Public endpoint for Google Sign-In URL
-auth.get('/google/url', (c) => {
+function getRedirectUri(c: any): string {
   const host = c.req.header('host') || 'taskm-r2m0.onrender.com';
   const protocol = c.req.header('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
-  
-  // Use GOOGLE_REDIRECT_URI if configured, but fix localhost fallback when running in production
   let redirectUri = process.env.GOOGLE_REDIRECT_URI || `${protocol}://${host}/api/emails/callback`;
   if (!host.includes('localhost') && redirectUri.includes('localhost')) {
     redirectUri = `${protocol}://${host}/api/emails/callback`;
   }
+  return redirectUri;
+}
+
+// GET /api/auth/google/url - Public endpoint for Google Sign-In URL
+auth.get('/google/url', (c) => {
+  const redirectUri = getRedirectUri(c);
 
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
@@ -115,6 +118,8 @@ auth.get('/google/callback', async (c) => {
   }
 
   try {
+    const redirectUri = getRedirectUri(c);
+
     // Exchange code for ID / Access Token
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
@@ -123,7 +128,7 @@ auth.get('/google/callback', async (c) => {
         code,
         client_id: GOOGLE_CLIENT_ID,
         client_secret: GOOGLE_CLIENT_SECRET,
-        redirect_uri: GOOGLE_AUTH_REDIRECT_URI,
+        redirect_uri: redirectUri,
         grant_type: 'authorization_code',
       }),
     });
