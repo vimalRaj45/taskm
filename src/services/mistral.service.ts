@@ -52,14 +52,14 @@ USER CONTEXT:
 Projects: ${JSON.stringify(userProjects)}
 Tasks: ${JSON.stringify(userTasks)}
 
-CRITICAL RULES TO AVOID HALLUCINATION:
-1. DO NOT HALLUCINATE OR GUESS DETAILS: If the user's prompt is vague, incomplete, or ambiguous (e.g. "meeting", "call someone", "project", "schedule task"), DO NOT invent fake task titles or dates. Instead, set actionType = "READ_ONLY", proposals = [], and ask a direct, helpful clarifying question in message!
-2. READ-ONLY Queries ("Do I have tasks this week?", "What is urgent?", "Plan my day", "Show overview"): Provide markdown answer, actionType = "READ_ONLY", proposals = [].
-3. CONCRETE ACTION Requests ("Finished landing page", "Add task prepare presentation for Friday", "Create project Mobile App"): Formulate precise proposal items in proposals array, actionType = "PROPOSAL".
+CRITICAL EASY-MODE RULES:
+1. FRICTIONLESS & INSTANT: NEVER ask clarifying questions. If the user prompt mentions any task, meeting, call, project, note, or idea (e.g. "meeting", "call sarah", "landing page", "buy domain"), IMMEDIATELY construct a ready-to-approve task or project proposal in proposals array!
+2. READ-ONLY Queries ("Do I have tasks this week?", "What is urgent?", "Plan my day"): Provide concise markdown briefing, actionType = "READ_ONLY", proposals = [].
+3. ANY OTHER INPUT: Generate exact proposal items in proposals array, set actionType = "PROPOSAL". Use sensible defaults (due date today, priority Medium/Urgent as requested).
 
 RETURN FORMAT (Strict JSON):
 {
-  "message": "Conversational reply or clarifying question if prompt is vague...",
+  "message": "Friendly 1-line response confirming proposal...",
   "actionType": "PROPOSAL" | "READ_ONLY",
   "proposals": [
     {
@@ -110,7 +110,7 @@ function ruleBasedFallbackParser(
 ): AIResponse {
   const lower = prompt.toLowerCase().trim();
 
-  // 1. "Plan my day" / "Show today"
+  // 1. "Plan my day" / "Show today" / "What is urgent"
   if (lower.includes('plan my day') || lower.includes('what is urgent') || lower.includes('show today') || lower.includes('my tasks')) {
     const urgentTasks = userTasks.filter((t) => (t.priority === 'Urgent' || t.priority === 'High') && t.status !== 'Completed');
     const todayTasks = userTasks.filter((t) => t.due_date === todayDate && t.status !== 'Completed');
@@ -178,52 +178,31 @@ function ruleBasedFallbackParser(
     };
   }
 
-  // 4. Ambiguous / Short Input Guard
-  if (lower.length < 5 || lower === 'task' || lower === 'meeting' || lower === 'call' || lower === 'project' || lower === 'add') {
-    return {
-      message: `Could you specify a bit more detail? E.g., *"Add task prepare slide deck due Friday"* or *"Schedule client call with Sarah tomorrow"* so I can set it up accurately.`,
-      actionType: 'READ_ONLY',
-      proposals: [],
-    };
-  }
+  // 4. Default: Instant zero-question task proposal generation for ANY user prompt
+  const cleanTitle = prompt.replace(/^(add|create|remind me to|schedule|task)\s*/i, '').trim() || prompt.trim();
+  const formattedTitle = cleanTitle.charAt(0).toUpperCase() + cleanTitle.slice(1);
+  const isUrgent = lower.includes('urgent') || lower.includes('asap') || lower.includes('critical');
+  const isHigh = lower.includes('important') || lower.includes('high');
+  const priority = isUrgent ? 'Urgent' : isHigh ? 'High' : 'Medium';
 
-  // 5. Create Task / Add task
-  if (lower.startsWith('add') || lower.startsWith('create') || lower.startsWith('remind me') || lower.includes('task')) {
-    const cleanTitle = prompt.replace(/(add|create|remind me to|task)\s*/i, '').trim();
+  const isTomorrow = lower.includes('tomorrow');
+  const dueDate = isTomorrow
+    ? new Date(Date.now() + 86400000).toISOString().split('T')[0]
+    : todayDate;
 
-    if (!cleanTitle || cleanTitle.length < 3) {
-      return {
-        message: `What title or subject should I use for this task?`,
-        actionType: 'READ_ONLY',
-        proposals: [],
-      };
-    }
-
-    const isUrgent = lower.includes('urgent') || lower.includes('asap');
-    const isHigh = lower.includes('important') || lower.includes('high');
-    const priority = isUrgent ? 'Urgent' : isHigh ? 'High' : 'Medium';
-
-    return {
-      message: `I've created a proposal to add task **"${cleanTitle}"** with **${priority}** priority due today (${todayDate}).`,
-      actionType: 'PROPOSAL',
-      proposals: [
-        {
-          id: `prop-${Date.now()}`,
-          type: 'CREATE_TASK',
-          title: cleanTitle,
-          priority: priority,
-          dueDate: todayDate,
-          status: 'Todo',
-          projectId: userProjects[0]?.id || undefined,
-        },
-      ],
-    };
-  }
-
-  // Default Response (Ask for clarification if prompt is not a clear command)
   return {
-    message: `I received your prompt: "${prompt}". Could you specify what action you would like me to perform (e.g., create a task, update status, or plan your day)?`,
-    actionType: 'READ_ONLY',
-    proposals: [],
+    message: `⚡ Prepared a proposal to add task **"${formattedTitle}"** (${priority} priority). Click Approve to save it instantly.`,
+    actionType: 'PROPOSAL',
+    proposals: [
+      {
+        id: `prop-${Date.now()}`,
+        type: 'CREATE_TASK',
+        title: formattedTitle,
+        priority: priority,
+        dueDate: dueDate,
+        status: 'Todo',
+        projectId: userProjects[0]?.id || undefined,
+      },
+    ],
   };
 }
