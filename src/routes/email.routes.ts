@@ -4,6 +4,7 @@ import { db, UserRecord, TaskRecord } from '../db/index.js';
 import { authMiddleware, HonoEnv, JwtPayload } from '../middleware/auth.js';
 import {
   getGoogleOAuthUrl,
+  getGoogleOAuthRedirectUri,
   exchangeCodeForTokens,
   getDailyEmailsWithImportance,
 } from '../services/email.service.js';
@@ -41,7 +42,11 @@ emails.get('/callback', async (c) => {
   }
 
   try {
-    const tokens = await exchangeCodeForTokens(code);
+    const host = c.req.header('host') || 'taskm-r2m0.onrender.com';
+    const protocol = c.req.header('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
+    const redirectUri = getGoogleOAuthRedirectUri(host, protocol);
+
+    const tokens = await exchangeCodeForTokens(code, redirectUri);
     const accessToken = tokens.access_token;
     const refreshToken = tokens.refresh_token;
 

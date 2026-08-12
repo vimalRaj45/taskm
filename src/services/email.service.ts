@@ -37,34 +37,37 @@ export interface EmailDigestResponse {
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
-const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5000/api/emails/callback';
 
-export function getGoogleOAuthUrl(): string {
-  if (!GOOGLE_CLIENT_ID) {
-    // Demo OAuth URL if credentials are not configured yet
-    const params = new URLSearchParams({
-      client_id: 'demo_google_client_id.apps.googleusercontent.com',
-      redirect_uri: GOOGLE_REDIRECT_URI,
-      response_type: 'code',
-      scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email',
-      access_type: 'offline',
-      prompt: 'consent',
-    });
-    return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+export function getGoogleOAuthRedirectUri(hostHeader?: string, protocolHeader?: string): string {
+  if (process.env.GOOGLE_REDIRECT_URI && !process.env.GOOGLE_REDIRECT_URI.includes('localhost')) {
+    return process.env.GOOGLE_REDIRECT_URI;
   }
+  if (hostHeader && !hostHeader.includes('localhost')) {
+    const proto = protocolHeader || 'https';
+    return `${proto}://${hostHeader}/api/emails/callback`;
+  }
+  return process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/emails/callback';
+}
+
+export function getGoogleOAuthUrl(hostHeader?: string, protocolHeader?: string): string {
+  const redirectUri = getGoogleOAuthRedirectUri(hostHeader, protocolHeader);
+  const clientId = GOOGLE_CLIENT_ID || 'demo_google_client_id.apps.googleusercontent.com';
 
   const params = new URLSearchParams({
-    client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: GOOGLE_REDIRECT_URI,
+    client_id: clientId,
+    redirect_uri: redirectUri,
     response_type: 'code',
-    scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email',
+    scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email openid profile',
     access_type: 'offline',
     prompt: 'consent',
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
 
-export async function exchangeCodeForTokens(code: string): Promise<{ access_token: string; refresh_token?: string }> {
+export async function exchangeCodeForTokens(
+  code: string,
+  redirectUri?: string
+): Promise<{ access_token: string; refresh_token?: string }> {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
     // Return mock OAuth tokens for testing environment
     return {
@@ -73,6 +76,8 @@ export async function exchangeCodeForTokens(code: string): Promise<{ access_toke
     };
   }
 
+  const finalRedirectUri = redirectUri || getGoogleOAuthRedirectUri();
+
   const response = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -80,7 +85,7 @@ export async function exchangeCodeForTokens(code: string): Promise<{ access_toke
       code,
       client_id: GOOGLE_CLIENT_ID,
       client_secret: GOOGLE_CLIENT_SECRET,
-      redirect_uri: GOOGLE_REDIRECT_URI,
+      redirect_uri: finalRedirectUri,
       grant_type: 'authorization_code',
     }),
   });
