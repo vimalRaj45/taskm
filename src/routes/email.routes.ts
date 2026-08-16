@@ -7,6 +7,7 @@ import {
   getGoogleOAuthRedirectUri,
   exchangeCodeForTokens,
   getDailyEmailsWithImportance,
+  refreshGoogleAccessToken,
 } from '../services/email.service.js';
 
 const emails = new Hono<HonoEnv>();
@@ -203,12 +204,23 @@ emails.post('/disconnect', async (c) => {
 emails.get('/daily', async (c) => {
   try {
     const userPayload = c.get('user') as JwtPayload;
-    const result = await db.query<UserRecord>('SELECT google_access_token FROM users WHERE id = $1', [
+    const result = await db.query<UserRecord>('SELECT google_access_token, google_refresh_token FROM users WHERE id = $1', [
       userPayload.userId,
     ]);
 
-    const accessToken = result.rows[0]?.google_access_token || null;
-    const digestData = await getDailyEmailsWithImportance(accessToken);
+    let accessToken = result.rows[0]?.google_access_token || null;
+    const refreshToken = result.rows[0]?.google_refresh_token || null;
+
+    let digestData = await getDailyEmailsWithImportance(accessToken);
+
+    // If fetch failed due to expired token and we have a refresh token, auto-refresh and retry
+    if (digestData.summary.totalEmails === 0 && digestData.summary.overview.includes('re-authorize') && refreshToken) {
+      const newAccessToken = await refreshGoogleAccessToken(refreshToken);
+      if (newAccessToken) {
+        await db.query('UPDATE users SET google_access_token = $1 WHERE id = $2', [newAccessToken, userPayload.userId]);
+        digestData = await getDailyEmailsWithImportance(newAccessToken);
+      }
+    }
 
     return c.json(digestData);
   } catch (err: any) {

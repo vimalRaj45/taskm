@@ -64,38 +64,62 @@ export function getGoogleOAuthUrl(hostHeader?: string, protocolHeader?: string):
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
 
-export async function exchangeCodeForTokens(
-  code: string,
-  redirectUri?: string
-): Promise<{ access_token: string; refresh_token?: string }> {
+export async function exchangeCodeForTokens(code: string, redirectUri: string) {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-    // Return mock OAuth tokens for testing environment
+    console.warn('Missing Google Client ID/Secret, returning demo mock tokens');
     return {
-      access_token: `mock_access_token_${Date.now()}`,
-      refresh_token: `mock_refresh_token_${Date.now()}`,
+      access_token: 'mock_google_access_token_' + Date.now(),
+      refresh_token: 'mock_google_refresh_token_' + Date.now(),
+      expires_in: 3600,
     };
   }
 
-  const finalRedirectUri = redirectUri || getGoogleOAuthRedirectUri();
-
-  const response = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      code,
-      client_id: GOOGLE_CLIENT_ID,
-      client_secret: GOOGLE_CLIENT_SECRET,
-      redirect_uri: finalRedirectUri,
-      grant_type: 'authorization_code',
-    }),
+  const tokenEndpoint = 'https://oauth2.googleapis.com/token';
+  const params = new URLSearchParams({
+    code,
+    client_id: GOOGLE_CLIENT_ID,
+    client_secret: GOOGLE_CLIENT_SECRET,
+    redirect_uri: redirectUri,
+    grant_type: 'authorization_code',
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Google OAuth Token Exchange failed: ${errorText}`);
+  const res = await fetch(tokenEndpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to exchange authorization code for Google tokens: ${errorText}`);
   }
 
-  return response.json();
+  return await res.json();
+}
+
+export async function refreshGoogleAccessToken(refreshToken: string): Promise<string | null> {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !refreshToken || refreshToken.startsWith('mock_')) {
+    return null;
+  }
+  try {
+    const res = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return data.access_token as string;
+    }
+  } catch (err) {
+    console.warn('Failed to refresh Google token:', err);
+  }
+  return null;
 }
 
 /**
