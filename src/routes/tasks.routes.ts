@@ -6,6 +6,22 @@ const tasks = new Hono<HonoEnv>();
 
 tasks.use('*', authMiddleware);
 
+export function normalizeDateStr(val: string | Date | null | undefined): string | null {
+  if (!val) return null;
+  if (val instanceof Date) {
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, '0');
+    const d = String(val.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  return String(val).split('T')[0];
+}
+
+const formatTaskRecord = (t: TaskRecord): TaskRecord => ({
+  ...t,
+  due_date: normalizeDateStr(t.due_date),
+});
+
 // GET /api/tasks
 tasks.get('/', async (c) => {
   const user = c.get('user') as JwtPayload;
@@ -14,7 +30,7 @@ tasks.get('/', async (c) => {
     [user.userId]
   );
 
-  return c.json({ tasks: result.rows });
+  return c.json({ tasks: result.rows.map(formatTaskRecord) });
 });
 
 // GET /api/tasks/today
@@ -25,8 +41,8 @@ tasks.get('/today', async (c) => {
     [user.userId]
   );
 
-  const allTasks = result.rows;
-  const todayStr = new Date().toISOString().split('T')[0];
+  const allTasks = result.rows.map(formatTaskRecord);
+  const todayStr = normalizeDateStr(new Date()) || new Date().toISOString().split('T')[0];
 
   const overdue: TaskRecord[] = [];
   const today: TaskRecord[] = [];
@@ -79,7 +95,7 @@ tasks.post('/', async (c) => {
     ]
   );
 
-  return c.json({ task: result.rows[0] }, 201);
+  return c.json({ task: formatTaskRecord(result.rows[0]) }, 201);
 });
 
 // PATCH /api/tasks/:id
@@ -110,7 +126,7 @@ tasks.patch('/:id', async (c) => {
     [newTitle, newPriority, newDueDate, newProjectId, newStatus, taskId]
   );
 
-  return c.json({ task: result.rows[0] });
+  return c.json({ task: formatTaskRecord(result.rows[0]) });
 });
 
 // DELETE /api/tasks/:id
