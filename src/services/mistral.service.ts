@@ -15,10 +15,17 @@ export interface ProposalItem {
     | 'ADD_NOTE';
   title?: string;
   name?: string;
+  description?: string;
   priority?: 'Low' | 'Medium' | 'High' | 'Urgent' | 'Critical';
   dueDate?: string;
   dueTime?: string;
   status?: string;
+  category?: string;
+  tags?: string;
+  estimatedDuration?: string;
+  isImportant?: boolean;
+  subtasks?: string[];
+  notes?: string;
   targetTaskId?: string;
   targetTaskTitle?: string;
   subtaskTitle?: string;
@@ -364,11 +371,12 @@ export function generateSQLForUserQuery(
     };
   }
 
-  // 5. CRUD: CREATE ACTION (e.g. "add task Deploy to production due tomorrow")
+  // 5. CRUD: CREATE ACTION (e.g. "add task Deploy to production due tomorrow with subtasks: DB migration, Smoke tests")
   if (isCreateIntent) {
     const proposals: ProposalItem[] = [];
-    let priority: 'Low' | 'Medium' | 'High' | 'Urgent' = 'Medium';
-    if (lower.includes('urgent') || lower.includes('@urgent') || lower.includes('critical')) priority = 'Urgent';
+    let priority: 'Low' | 'Medium' | 'High' | 'Urgent' | 'Critical' = 'Medium';
+    if (lower.includes('critical')) priority = 'Critical';
+    else if (lower.includes('urgent') || lower.includes('@urgent')) priority = 'Urgent';
     else if (lower.includes('high') || lower.includes('@high')) priority = 'High';
     else if (lower.includes('low') || lower.includes('@low')) priority = 'Low';
 
@@ -381,8 +389,43 @@ export function generateSQLForUserQuery(
     const dateMatch = prompt.match(/\b(\d{4}-\d{2}-\d{2})\b/);
     if (dateMatch) dueDate = dateMatch[1];
 
+    // Extract subtasks if mentioned e.g. "with subtasks: A, B, C" or "steps: A, B"
+    let subtasks: string[] | undefined = undefined;
+    const subtasksMatch = prompt.match(/(?:with\s+subtasks|subtasks|steps)[:\s]+([^;.\n]+)/i);
+    if (subtasksMatch) {
+      subtasks = subtasksMatch[1]
+        .split(/[,&]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+
+    // Extract category if mentioned e.g. "category: Engineering"
+    let category: string | undefined = undefined;
+    const catMatch = prompt.match(/(?:category|cat)[:\s]+([a-zA-Z0-9_-]+)/i);
+    if (catMatch) category = catMatch[1].trim();
+
+    // Extract tags e.g. "#backend #v2"
+    let tags: string | undefined = undefined;
+    const tagMatches = prompt.match(/#[a-zA-Z0-9_-]+/g);
+    if (tagMatches) tags = tagMatches.join(', ');
+
+    // Extract permanent note if mentioned e.g. "note: Check latency"
+    let notes: string | undefined = undefined;
+    const noteMatch = prompt.match(/(?:note|notes)[:\s]+([^;.\n]+)/i);
+    if (noteMatch) notes = noteMatch[1].trim();
+
+    // Extract description
+    let description: string | undefined = undefined;
+    const descMatch = prompt.match(/(?:desc|description)[:\s]+([^;.\n]+)/i);
+    if (descMatch) description = descMatch[1].trim();
+
     let cleanTitle = prompt
-      .replace(/^(add|create|new\s+task)\s+/i, '')
+      .replace(/^(add|create|new\s+task|schedule)\s+/i, '')
+      .replace(/(?:with\s+subtasks|subtasks|steps)[:\s]+[^;.\n]+/gi, '')
+      .replace(/(?:category|cat)[:\s]+[a-zA-Z0-9_-]+/gi, '')
+      .replace(/(?:note|notes)[:\s]+[^;.\n]+/gi, '')
+      .replace(/(?:desc|description)[:\s]+[^;.\n]+/gi, '')
+      .replace(/#[a-zA-Z0-9_-]+/g, '')
       .replace(/@\w+(?::"[^"]+"|\S+)?/g, '')
       .replace(/\b(urgent|high|medium|low|critical|priority|due|today|tomorrow|next\s+week)\b/gi, '')
       .trim();
@@ -392,9 +435,15 @@ export function generateSQLForUserQuery(
       id: `prop-create-${Date.now()}`,
       type: 'CREATE_TASK',
       title: cleanTitle,
+      description,
       priority,
       dueDate,
       status: 'Todo',
+      category,
+      tags,
+      isImportant: priority === 'Urgent' || priority === 'Critical',
+      subtasks,
+      notes,
     });
 
     return {

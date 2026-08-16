@@ -115,28 +115,55 @@ ai.post('/approve', async (c) => {
       if (prop.type === 'CREATE_TASK') {
         const newTaskId = crypto.randomUUID();
         const res = await db.query<TaskRecord>(
-          `INSERT INTO tasks (id, user_id, project_id, title, priority, due_date, due_time, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+          `INSERT INTO tasks (id, user_id, project_id, title, description, priority, due_date, due_time, status, category, tags, estimated_duration, is_important)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
           [
             newTaskId,
             user.userId,
             prop.projectId || null,
             prop.title || 'Untitled Task',
+            prop.description || null,
             prop.priority || 'Medium',
             prop.dueDate || new Date().toISOString().split('T')[0],
             prop.dueTime || null,
             prop.status || 'Todo',
+            prop.category || null,
+            prop.tags || null,
+            prop.estimatedDuration || null,
+            Boolean(prop.isImportant),
           ]
         );
         const createdTask = res.rows[0] || { id: newTaskId, user_id: user.userId, title: prop.title, priority: prop.priority, status: 'Todo' };
         executedResults.push({ type: prop.type, item: createdTask });
+
+        // If subtasks were generated, save them
+        if (Array.isArray(prop.subtasks) && prop.subtasks.length > 0) {
+          for (let i = 0; i < prop.subtasks.length; i++) {
+            const subId = crypto.randomUUID();
+            await db.query(
+              `INSERT INTO subtasks (id, task_id, user_id, title, is_completed, position)
+               VALUES ($1, $2, $3, $4, false, $5)`,
+              [subId, createdTask.id, user.userId, prop.subtasks[i], i]
+            );
+          }
+        }
+
+        // If note was generated, save it
+        if (prop.notes && prop.notes.trim()) {
+          const noteId = crypto.randomUUID();
+          await db.query(
+            `INSERT INTO task_notes (id, task_id, user_id, content)
+             VALUES ($1, $2, $3, $4)`,
+            [noteId, createdTask.id, user.userId, prop.notes.trim()]
+          );
+        }
 
         // Log Activity
         const actId = crypto.randomUUID();
         await db.query(
           `INSERT INTO activity_logs (id, task_id, user_id, action_type, details)
            VALUES ($1, $2, $3, 'CREATED_BY_AI', $4)`,
-          [actId, createdTask.id, user.userId, JSON.stringify({ title: createdTask.title })]
+          [actId, createdTask.id, user.userId, JSON.stringify({ title: createdTask.title, subtasksCount: prop.subtasks?.length || 0 })]
         );
       } else if (prop.type === 'COMPLETE_TASK') {
         if (prop.targetTaskId) {
