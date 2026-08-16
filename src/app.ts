@@ -8,6 +8,11 @@ import tasksRoutes from './routes/tasks.routes.js';
 import projectsRoutes from './routes/projects.routes.js';
 import aiRoutes from './routes/ai.routes.js';
 import emailRoutes from './routes/email.routes.js';
+import { subtasksRouter } from './routes/subtasks.routes.js';
+import { notesRouter } from './routes/notes.routes.js';
+import { inboxRouter } from './routes/inbox.routes.js';
+import { activityRouter } from './routes/activity.routes.js';
+import { reportsRouter } from './routes/reports.routes.js';
 import { db } from './db/index.js';
 
 dotenv.config();
@@ -57,6 +62,11 @@ app.route('/api/tasks', tasksRoutes);
 app.route('/api/projects', projectsRoutes);
 app.route('/api/ai', aiRoutes);
 app.route('/api/emails', emailRoutes);
+app.route('/api/subtasks', subtasksRouter);
+app.route('/api/notes', notesRouter);
+app.route('/api/inbox', inboxRouter);
+app.route('/api/activity', activityRouter);
+app.route('/api/reports', reportsRouter);
 
 // Always start HTTP server on 0.0.0.0 for Render / Node.js runtime
 serve(

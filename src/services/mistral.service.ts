@@ -5,23 +5,43 @@ dotenv.config();
 
 export interface ProposalItem {
   id: string;
-  type: 'CREATE_TASK' | 'COMPLETE_TASK' | 'UPDATE_TASK' | 'DELETE_TASK' | 'CREATE_PROJECT';
+  type:
+    | 'CREATE_TASK'
+    | 'COMPLETE_TASK'
+    | 'UPDATE_TASK'
+    | 'DELETE_TASK'
+    | 'CREATE_PROJECT'
+    | 'ADD_SUBTASK'
+    | 'ADD_NOTE';
   title?: string;
   name?: string;
-  priority?: 'Low' | 'Medium' | 'High' | 'Urgent';
+  priority?: 'Low' | 'Medium' | 'High' | 'Urgent' | 'Critical';
   dueDate?: string;
+  dueTime?: string;
   status?: string;
   targetTaskId?: string;
   targetTaskTitle?: string;
+  subtaskTitle?: string;
+  noteContent?: string;
   projectId?: string;
   client?: string;
+  requiresConfirmation?: boolean;
+}
+
+export interface ConversationContext {
+  lastTaskId?: string;
+  lastTaskTitle?: string;
+  lastList?: Array<{ id: string; title: string; priority?: string; status?: string; due_date?: string }>;
 }
 
 export interface AIResponse {
   message: string;
-  actionType: 'PROPOSAL' | 'READ_ONLY';
+  actionType: 'PROPOSAL' | 'READ_ONLY' | 'DISAMBIGUATE' | 'CONFIRM_DELETION';
   proposals: ProposalItem[];
   sqlQuery?: string;
+  candidates?: any[];
+  focusedTaskId?: string;
+  focusedTaskTitle?: string;
 }
 
 export interface SQLGenerationResult {
@@ -30,19 +50,50 @@ export interface SQLGenerationResult {
   params: any[];
   proposals?: ProposalItem[];
   targetEntity?: 'TASKS' | 'PROJECTS';
+  focusedTaskId?: string;
+  focusedTaskTitle?: string;
+  actionType?: 'PROPOSAL' | 'READ_ONLY' | 'DISAMBIGUATE' | 'CONFIRM_DELETION';
+  candidates?: any[];
 }
 
 /**
  * Text-to-SQL Generator: Translates Natural Language into a safe, parameterized SQL Query
+ * Supports Contextual Pronouns ("it", "the second one", "that task"), Subtasks, Notes, and Disambiguation
  */
 export function generateSQLForUserQuery(
   prompt: string,
-  todayDate: string
+  todayDate: string,
+  context?: ConversationContext
 ): SQLGenerationResult {
   const lower = prompt.toLowerCase().trim();
 
-  // Robust Task Tag Extraction (handles both quoted `@task:"..."` and single-word `@task:...`)
+  // 1. Resolve Contextual Task Reference (Pronoun resolution: "it", "that task", "the second one")
   let mentionedTaskTitle: string | null = null;
+  let targetTaskId: string | null = null;
+
+  // Ordinal list reference e.g. "the second one", "the 2nd one", "the first task"
+  if (context?.lastList && context.lastList.length > 0) {
+    if (lower.includes('first') || lower.includes('1st')) {
+      mentionedTaskTitle = context.lastList[0]?.title || null;
+      targetTaskId = context.lastList[0]?.id || null;
+    } else if ((lower.includes('second') || lower.includes('2nd')) && context.lastList.length > 1) {
+      mentionedTaskTitle = context.lastList[1]?.title || null;
+      targetTaskId = context.lastList[1]?.id || null;
+    } else if ((lower.includes('third') || lower.includes('3rd')) && context.lastList.length > 2) {
+      mentionedTaskTitle = context.lastList[2]?.title || null;
+      targetTaskId = context.lastList[2]?.id || null;
+    }
+  }
+
+  // Pronoun reference e.g. "it", "that task", "this task", "its subtasks"
+  if (!mentionedTaskTitle && (lower.includes(' it ') || lower.endsWith(' it') || lower.includes('that task') || lower.includes('this task') || lower.includes('to it'))) {
+    if (context?.lastTaskTitle) {
+      mentionedTaskTitle = context.lastTaskTitle;
+      targetTaskId = context.lastTaskId || null;
+    }
+  }
+
+  // Robust Explicit Task Tag Extraction (handles both quoted `@task:"..."` and single-word `@task:...`)
   const quotedTaskMatch = prompt.match(/@task(?::|\s+)["']([^"'\n\r]+)["']/i);
   if (quotedTaskMatch) {
     mentionedTaskTitle = quotedTaskMatch[1].trim();
@@ -65,7 +116,7 @@ export function generateSQLForUserQuery(
     }
   }
 
-  // Extract the command text outside of @task / @project tags to prevent task titles from falsely triggering action verbs
+  // Extract the command text outside of @task / @project tags
   const commandText = prompt
     .replace(/@task(?::|\s+)["'][^"'\n\r]+["']/gi, '')
     .replace(/@task:\S+/gi, '')
@@ -75,13 +126,25 @@ export function generateSQLForUserQuery(
     .trim();
 
   // Detect if user is asking an inquiry / informational question
+  const isCreatePrefix =
+    commandText.startsWith('add ') ||
+    commandText.startsWith('create ') ||
+    commandText.startsWith('schedule ') ||
+    commandText.startsWith('new task ');
+
   const isQuestionOrInfo =
-    /\b(when|what|deadline|daedline|due|status|show|tell|info|details|list|how|who|which|view)\b/i.test(commandText) ||
-    commandText === 'deadline' ||
-    commandText === 'daedline' ||
-    commandText.includes('deadline') ||
-    commandText.includes('daedline') ||
-    commandText.length === 0;
+    !isCreatePrefix &&
+    (/\b(when|what|deadline|daedline|status|show|tell|info|details|list|how|who|which|view|report|progress)\b/i.test(commandText) ||
+      commandText === 'deadline' ||
+      commandText === 'daedline' ||
+      commandText.includes('deadline') ||
+      commandText.includes('daedline') ||
+      commandText.length === 0);
+
+  // Subtask Intent
+  const isSubtaskIntent = !isQuestionOrInfo && /\b(subtask|sub-task|sub task)\b/i.test(commandText);
+  // Note Intent
+  const isNoteIntent = !isQuestionOrInfo && /\b(note|add note|permanent note)\b/i.test(commandText);
 
   // Detect Action/CRUD Keywords only when NOT an info question
   const isDeleteIntent = !isQuestionOrInfo && /\b(delete|del|remove|drop|trash)\b/i.test(commandText);
@@ -90,6 +153,8 @@ export function generateSQLForUserQuery(
   const isCreateIntent =
     !isQuestionOrInfo &&
     !mentionedTaskTitle &&
+    !isSubtaskIntent &&
+    !isNoteIntent &&
     ((/\b(add|create|new task|schedule)\b/i.test(commandText) &&
       !commandText.includes('show') &&
       !commandText.includes('list') &&
@@ -98,13 +163,109 @@ export function generateSQLForUserQuery(
       commandText.startsWith('add ') ||
       commandText.startsWith('create '));
 
-  // 1. CRUD: DELETE ACTION
+  // 1. ACTION: ADD NOTE TO TASK
+  if (isNoteIntent) {
+    let noteContent = prompt
+      .replace(/^(add\s+note|note|add\s+permanent\s+note)[:\s]*/i, '')
+      .replace(/@\w+(?::"[^"]+"|\S+)?/g, '')
+      .replace(/\b(to\s+it|to\s+that\s+task|on\s+it)\b/gi, '')
+      .trim();
+    if (!noteContent) noteContent = 'Important update';
+
+    const proposals: ProposalItem[] = [
+      {
+        id: `prop-note-${Date.now()}`,
+        type: 'ADD_NOTE',
+        title: `Attach Note to "${mentionedTaskTitle || 'Focused Task'}"`,
+        noteContent,
+        targetTaskId: targetTaskId || undefined,
+        targetTaskTitle: mentionedTaskTitle || undefined,
+      },
+    ];
+
+    return {
+      isAction: true,
+      sql: mentionedTaskTitle
+        ? 'SELECT * FROM tasks WHERE user_id = $1 AND LOWER(title) LIKE LOWER($2) LIMIT 1'
+        : 'SELECT * FROM tasks WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
+      params: mentionedTaskTitle ? [`%${mentionedTaskTitle}%`] : [],
+      proposals,
+      focusedTaskId: targetTaskId || undefined,
+      focusedTaskTitle: mentionedTaskTitle || undefined,
+    };
+  }
+
+  // 2. ACTION: ADD / COMPLETE SUBTASK
+  if (isSubtaskIntent) {
+    if (isCompleteIntent) {
+      // Mark subtask complete
+      let subtaskTitle = prompt
+        .replace(/^(mark|complete|check)\s+(?:the\s+)?(?:second|first|third|1st|2nd|3rd|\d+)?\s*(?:subtask|sub-task)?[:\s]*/i, '')
+        .replace(/@\w+(?::"[^"]+"|\S+)?/g, '')
+        .replace(/\b(complete|completed|done|on\s+it|of\s+it)\b/gi, '')
+        .trim();
+
+      const proposals: ProposalItem[] = [
+        {
+          id: `prop-sub-done-${Date.now()}`,
+          type: 'UPDATE_TASK',
+          title: `Mark Subtask "${subtaskTitle || 'targeted subtask'}" Complete`,
+          targetTaskId: targetTaskId || undefined,
+          targetTaskTitle: mentionedTaskTitle || undefined,
+        },
+      ];
+
+      return {
+        isAction: true,
+        sql: 'SELECT * FROM subtasks WHERE user_id = $1 ORDER BY created_at DESC LIMIT 5',
+        params: [],
+        proposals,
+        focusedTaskId: targetTaskId || undefined,
+        focusedTaskTitle: mentionedTaskTitle || undefined,
+      };
+    }
+
+    // Add new subtask
+    let subtaskTitle = prompt
+      .replace(/^(add\s+subtask|add\s+another\s+subtask|subtask)[:\s]*/i, '')
+      .replace(/@\w+(?::"[^"]+"|\S+)?/g, '')
+      .replace(/\b(to\s+it|to\s+that\s+task|under\s+it)\b/gi, '')
+      .trim();
+    if (!subtaskTitle) subtaskTitle = 'New Subtask';
+
+    const proposals: ProposalItem[] = [
+      {
+        id: `prop-sub-${Date.now()}`,
+        type: 'ADD_SUBTASK',
+        title: `Add Subtask "${subtaskTitle}" to "${mentionedTaskTitle || 'Focused Task'}"`,
+        subtaskTitle,
+        targetTaskId: targetTaskId || undefined,
+        targetTaskTitle: mentionedTaskTitle || undefined,
+      },
+    ];
+
+    return {
+      isAction: true,
+      sql: mentionedTaskTitle
+        ? 'SELECT * FROM tasks WHERE user_id = $1 AND LOWER(title) LIKE LOWER($2) LIMIT 1'
+        : 'SELECT * FROM tasks WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
+      params: mentionedTaskTitle ? [`%${mentionedTaskTitle}%`] : [],
+      proposals,
+      focusedTaskId: targetTaskId || undefined,
+      focusedTaskTitle: mentionedTaskTitle || undefined,
+    };
+  }
+
+  // 3. ACTION: DELETE TASK (Requires Safety Confirmation)
   if (isDeleteIntent) {
     const proposals: ProposalItem[] = [
       {
         id: `prop-del-${Date.now()}`,
         type: 'DELETE_TASK',
-        title: mentionedTaskTitle ? `Delete task "${mentionedTaskTitle}"` : 'Delete target task',
+        title: mentionedTaskTitle ? `Permanently Delete Task "${mentionedTaskTitle}"` : 'Delete Target Task',
+        targetTaskId: targetTaskId || undefined,
+        targetTaskTitle: mentionedTaskTitle || undefined,
+        requiresConfirmation: true,
       },
     ];
 
@@ -114,6 +275,9 @@ export function generateSQLForUserQuery(
         sql: 'SELECT * FROM tasks WHERE user_id = $1 AND LOWER(title) LIKE LOWER($2) ORDER BY due_date ASC NULLS LAST, created_at DESC',
         params: [`%${mentionedTaskTitle}%`],
         proposals,
+        actionType: 'CONFIRM_DELETION',
+        focusedTaskId: targetTaskId || undefined,
+        focusedTaskTitle: mentionedTaskTitle || undefined,
       };
     }
 
@@ -122,10 +286,11 @@ export function generateSQLForUserQuery(
       sql: "SELECT * FROM tasks WHERE user_id = $1 AND status = 'Completed' ORDER BY created_at DESC",
       params: [],
       proposals,
+      actionType: 'CONFIRM_DELETION',
     };
   }
 
-  // 2. CRUD: UPDATE & COMPLETE ACTIONS (e.g. "@task:for updtae to complated", "mark @task:for done", "make @task:for urgent")
+  // 4. CRUD: UPDATE & COMPLETE ACTIONS (e.g. "@task:for updtae to complated", "mark @task:for done", "make @task:for urgent", "move it to Friday")
   if (isUpdateIntent || isCompleteIntent) {
     const proposals: ProposalItem[] = [];
 
@@ -138,8 +303,9 @@ export function generateSQLForUserQuery(
       newStatus = 'Todo';
     }
 
-    let newPriority: 'Low' | 'Medium' | 'High' | 'Urgent' | undefined = undefined;
-    if (lower.includes('urgent') || lower.includes('@urgent') || lower.includes('critical')) newPriority = 'Urgent';
+    let newPriority: 'Low' | 'Medium' | 'High' | 'Urgent' | 'Critical' | undefined = undefined;
+    if (lower.includes('critical')) newPriority = 'Critical';
+    else if (lower.includes('urgent') || lower.includes('@urgent')) newPriority = 'Urgent';
     else if (lower.includes('high') || lower.includes('@high')) newPriority = 'High';
     else if (lower.includes('medium') || lower.includes('@medium')) newPriority = 'Medium';
     else if (lower.includes('low') || lower.includes('@low')) newPriority = 'Low';
@@ -151,14 +317,22 @@ export function generateSQLForUserQuery(
       newDueDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
     } else if (lower.includes('today')) {
       newDueDate = todayDate;
+    } else if (lower.includes('friday')) {
+      const now = new Date();
+      const day = now.getDay();
+      const diff = (5 - day + 7) % 7 || 7;
+      newDueDate = new Date(now.getTime() + diff * 86400000).toISOString().split('T')[0];
     }
     const dateMatch = prompt.match(/\b(\d{4}-\d{2}-\d{2})\b/);
     if (dateMatch) newDueDate = dateMatch[1];
 
     const actionType = newStatus === 'Completed' ? 'COMPLETE_TASK' : 'UPDATE_TASK';
-    const actionLabel = newStatus === 'Completed'
-      ? `Mark task ${mentionedTaskTitle ? `"${mentionedTaskTitle}"` : ''} as Completed`
-      : `Update task ${mentionedTaskTitle ? `"${mentionedTaskTitle}"` : ''}${newPriority ? ` to [${newPriority}] priority` : ''}${newDueDate ? ` (Due: ${newDueDate})` : ''}${newStatus ? ` (Status: ${newStatus})` : ''}`;
+    const actionLabel =
+      newStatus === 'Completed'
+        ? `Mark task ${mentionedTaskTitle ? `"${mentionedTaskTitle}"` : ''} as Completed`
+        : newDueDate && !newStatus && !newPriority
+        ? `Reschedule task ${mentionedTaskTitle ? `"${mentionedTaskTitle}"` : ''} to ${newDueDate}`
+        : `Update task ${mentionedTaskTitle ? `"${mentionedTaskTitle}"` : ''}${newPriority ? ` to [${newPriority}] priority` : ''}${newDueDate ? ` (Due: ${newDueDate})` : ''}${newStatus ? ` (Status: ${newStatus})` : ''}`;
 
     proposals.push({
       id: `prop-upd-${Date.now()}`,
@@ -167,6 +341,8 @@ export function generateSQLForUserQuery(
       status: newStatus,
       priority: newPriority,
       dueDate: newDueDate,
+      targetTaskId: targetTaskId || undefined,
+      targetTaskTitle: mentionedTaskTitle || undefined,
     });
 
     if (mentionedTaskTitle) {
@@ -175,6 +351,8 @@ export function generateSQLForUserQuery(
         sql: 'SELECT * FROM tasks WHERE user_id = $1 AND LOWER(title) LIKE LOWER($2) ORDER BY due_date ASC NULLS LAST, created_at DESC',
         params: [`%${mentionedTaskTitle}%`],
         proposals,
+        focusedTaskId: targetTaskId || undefined,
+        focusedTaskTitle: mentionedTaskTitle || undefined,
       };
     }
 
@@ -186,11 +364,11 @@ export function generateSQLForUserQuery(
     };
   }
 
-  // 3. CRUD: CREATE ACTION (e.g. "add task Deploy to production due tomorrow")
+  // 5. CRUD: CREATE ACTION (e.g. "add task Deploy to production due tomorrow")
   if (isCreateIntent) {
     const proposals: ProposalItem[] = [];
     let priority: 'Low' | 'Medium' | 'High' | 'Urgent' = 'Medium';
-    if (lower.includes('urgent') || lower.includes('@urgent')) priority = 'Urgent';
+    if (lower.includes('urgent') || lower.includes('@urgent') || lower.includes('critical')) priority = 'Urgent';
     else if (lower.includes('high') || lower.includes('@high')) priority = 'High';
     else if (lower.includes('low') || lower.includes('@low')) priority = 'Low';
 
@@ -206,7 +384,7 @@ export function generateSQLForUserQuery(
     let cleanTitle = prompt
       .replace(/^(add|create|new\s+task)\s+/i, '')
       .replace(/@\w+(?::"[^"]+"|\S+)?/g, '')
-      .replace(/\b(urgent|high|medium|low|priority|due|today|tomorrow|next\s+week)\b/gi, '')
+      .replace(/\b(urgent|high|medium|low|critical|priority|due|today|tomorrow|next\s+week)\b/gi, '')
       .trim();
     if (!cleanTitle) cleanTitle = 'New Task';
 
@@ -227,7 +405,26 @@ export function generateSQLForUserQuery(
     };
   }
 
-  // 4. READ: All Projects & Project Deadlines Query (e.g. "tell deadline of all project", "show all projects")
+  // 6. READ: Important Work / Important Tasks
+  if (lower.includes('important') || lower.includes('@important') || lower.includes('priority tasks')) {
+    return {
+      isAction: false,
+      sql: "SELECT * FROM tasks WHERE user_id = $1 AND (is_important = true OR priority = 'Urgent' OR priority = 'High' OR priority = 'Critical') AND status != 'Completed' ORDER BY due_date ASC NULLS LAST, priority DESC",
+      params: [],
+    };
+  }
+
+  // 7. READ: Tomorrow's tasks
+  if (lower.includes('tomorrow')) {
+    const tomorrowStr = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    return {
+      isAction: false,
+      sql: 'SELECT * FROM tasks WHERE user_id = $1 AND due_date = $2 ORDER BY priority DESC, created_at DESC',
+      params: [tomorrowStr],
+    };
+  }
+
+  // 8. READ: All Projects & Project Deadlines Query (e.g. "tell deadline of all project", "show all projects")
   const isProjectQuery =
     (lower.includes('project') || lower.includes('projects')) &&
     (lower.includes('all') ||
@@ -236,7 +433,8 @@ export function generateSQLForUserQuery(
       lower.includes('list') ||
       lower.includes('show') ||
       lower.includes('what') ||
-      lower.includes('tell')) &&
+      lower.includes('tell') ||
+      lower.includes('progress')) &&
     !mentionedTaskTitle;
 
   if (isProjectQuery) {
@@ -248,12 +446,13 @@ export function generateSQLForUserQuery(
     };
   }
 
-  // 5. READ: Specific Project filter
-  if (mentionedProjectName) {
+  // 9. READ: Specific Project filter (e.g. "Show SalesForge progress")
+  if (mentionedProjectName || (lower.includes('progress') && !mentionedTaskTitle)) {
+    const projSearch = mentionedProjectName || prompt.replace(/show|progress|of|project/gi, '').trim();
     return {
       isAction: false,
-      sql: `SELECT t.*, p.name as project_name FROM tasks t JOIN projects p ON t.project_id = p.id WHERE t.user_id = $1 AND LOWER(p.name) LIKE LOWER($2) ORDER BY t.due_date ASC NULLS LAST, t.created_at DESC`,
-      params: [`%${mentionedProjectName}%`],
+      sql: `SELECT t.*, p.name as project_name, p.status as project_status, p.deadline as project_deadline FROM tasks t JOIN projects p ON t.project_id = p.id WHERE t.user_id = $1 AND LOWER(p.name) LIKE LOWER($2) ORDER BY t.due_date ASC NULLS LAST, t.created_at DESC`,
+      params: [`%${projSearch}%`],
     };
   }
 

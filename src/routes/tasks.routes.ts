@@ -82,10 +82,12 @@ tasks.post('/', async (c) => {
     return c.json({ error: 'Title is required' }, 400);
   }
 
+  const newTaskId = crypto.randomUUID();
   const result = await db.query<TaskRecord>(
-    `INSERT INTO tasks (user_id, project_id, title, priority, due_date, status)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    `INSERT INTO tasks (id, user_id, project_id, title, priority, due_date, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
     [
+      newTaskId,
       user.userId,
       project_id || null,
       title,
@@ -95,7 +97,7 @@ tasks.post('/', async (c) => {
     ]
   );
 
-  return c.json({ task: formatTaskRecord(result.rows[0]) }, 201);
+  return c.json({ task: formatTaskRecord(result.rows[0]) || { id: newTaskId, user_id: user.userId, project_id: project_id || null, title, priority: priority || 'Medium', due_date: due_date || null, status: status || 'Todo' } }, 201);
 });
 
 // PATCH /api/tasks/:id

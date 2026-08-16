@@ -34,16 +34,17 @@ projects.post('/', async (c) => {
     return c.json({ error: 'Project name is required' }, 400);
   }
 
+  const newProjectId = crypto.randomUUID();
   const result = await db.query<ProjectRecord>(
-    `INSERT INTO projects (user_id, name, client, deadline, status)
-     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [user.userId, name, client || null, deadline || null, status || 'Active']
+    `INSERT INTO projects (id, user_id, name, client, deadline, status)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [newProjectId, user.userId, name, client || null, deadline || null, status || 'Active']
   );
 
   return c.json(
     {
       project: {
-        ...result.rows[0],
+        ...(result.rows[0] || { id: newProjectId, user_id: user.userId, name, client: client || null, deadline: deadline || null, status: status || 'Active' }),
         total_tasks: '0',
         completed_tasks: '0',
       },

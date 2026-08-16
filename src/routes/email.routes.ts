@@ -130,12 +130,41 @@ emails.get('/callback', async (c) => {
 
 // Public endpoint to get Google OAuth login URL
 emails.get('/connect', async (c) => {
-  const url = getGoogleOAuthUrl();
+  const host = c.req.header('host') || 'taskm-r2m0.onrender.com';
+  const protocol = c.req.header('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
+  const url = getGoogleOAuthUrl(host, protocol);
   return c.json({ url });
 });
 
 // Protect remaining private routes with authMiddleware
 emails.use('*', authMiddleware);
+
+// GET /api/emails/status
+emails.get('/status', async (c) => {
+  try {
+    const userPayload = c.get('user') as JwtPayload;
+    if (!userPayload?.userId) {
+      return c.json({ isConnected: false });
+    }
+
+    const res = await db.query<UserRecord>(
+      'SELECT email, google_id, google_access_token FROM users WHERE id = $1',
+      [userPayload.userId]
+    );
+
+    const user = res.rows[0];
+    const isConnected = Boolean(user && user.google_access_token);
+
+    return c.json({
+      isConnected,
+      email: isConnected ? user?.email : undefined,
+      googleId: user?.google_id,
+    });
+  } catch (err: any) {
+    console.error('Email status error:', err);
+    return c.json({ isConnected: false, error: err.message });
+  }
+});
 
 // POST /api/emails/save-tokens
 emails.post('/save-tokens', async (c) => {
@@ -201,15 +230,16 @@ emails.post('/convert-task', async (c) => {
     const taskPriority = priority || 'High';
     const taskDueDate = dueDate || new Date().toISOString().split('T')[0];
 
+    const newTaskId = crypto.randomUUID();
     const result = await db.query<TaskRecord>(
-      `INSERT INTO tasks (user_id, project_id, title, priority, due_date, status)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [userPayload.userId, projectId || null, title, taskPriority, taskDueDate, 'Todo']
+      `INSERT INTO tasks (id, user_id, project_id, title, priority, due_date, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [newTaskId, userPayload.userId, projectId || null, title, taskPriority, taskDueDate, 'Todo']
     );
 
     return c.json({
       message: 'Email converted to task successfully!',
-      task: result.rows[0],
+      task: result.rows[0] || { id: newTaskId, user_id: userPayload.userId, project_id: projectId || null, title, priority: taskPriority, due_date: taskDueDate, status: 'Todo' },
     });
   } catch (err: any) {
     console.error('Convert email to task error:', err);
